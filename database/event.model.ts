@@ -109,47 +109,41 @@ const EventSchema = new Schema<IEvent>(
   },
 );
 
-EventSchema.pre("save", async function (next) {
-  try {
-    const event = this as IEvent;
+EventSchema.pre("save", async function () {
+  const event = this as IEvent;
 
-    // Normalize date and time into stable storage formats.
-    if (event.isModified("date")) {
-      event.date = normalizeDate(event.date);
+  // Normalize date and time into stable storage formats.
+  if (event.isModified("date")) {
+    event.date = normalizeDate(event.date);
+  }
+
+  if (event.isModified("time")) {
+    event.time = normalizeTime(event.time);
+  }
+
+  // Generate a stable base slug, then resolve collisions before save.
+  if (event.isModified("title") || event.isNew) {
+    const baseSlug = generateSlug(event.title);
+    if (!baseSlug) {
+      throw new Error("Unable to generate slug from title");
     }
 
-    if (event.isModified("time")) {
-      event.time = normalizeTime(event.time);
-    }
+    let candidate = baseSlug;
+    let exists = await Event.exists({
+      slug: candidate,
+      _id: { $ne: event._id },
+    });
 
-    // Generate a stable base slug, then resolve collisions before save.
-    if (event.isModified("title") || event.isNew) {
-      const baseSlug = generateSlug(event.title);
-      if (!baseSlug) {
-        throw new Error("Unable to generate slug from title");
-      }
-
-      let candidate = baseSlug;
-      let exists = await Event.exists({
+    while (exists) {
+      const uniqueSuffix = Math.random().toString(36).slice(2, 8);
+      candidate = `${baseSlug}-${uniqueSuffix}`;
+      exists = await Event.exists({
         slug: candidate,
         _id: { $ne: event._id },
       });
-
-      while (exists) {
-        const uniqueSuffix = Math.random().toString(36).slice(2, 8);
-        candidate = `${baseSlug}-${uniqueSuffix}`;
-        exists = await Event.exists({
-          slug: candidate,
-          _id: { $ne: event._id },
-        });
-      }
-
-      event.slug = candidate;
     }
 
-    next();
-  } catch (error) {
-    next(error as Error);
+    event.slug = candidate;
   }
 });
 
