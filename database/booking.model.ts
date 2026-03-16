@@ -1,13 +1,6 @@
-import {
-  model,
-  models,
-  Schema,
-  Types,
-  type HydratedDocument,
-  type Model,
-} from "mongoose";
+import { model, models, Schema, Types, type Model } from "mongoose";
 
-import { Event } from "./event.model";
+import Event from "./event.model";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -17,8 +10,6 @@ export interface IBooking {
   createdAt?: Date;
   updatedAt?: Date;
 }
-
-type BookingDocument = HydratedDocument<IBooking>;
 
 type BookingModel = Model<IBooking>;
 
@@ -46,8 +37,7 @@ bookingSchema.index({ eventId: 1 });
 
 bookingSchema.pre("save", async function (next) {
   try {
-    // Validate and normalize email before persistence.
-    this.email = this.email.trim().toLowerCase();
+    // Validate email format before persistence.
     if (!EMAIL_REGEX.test(this.email)) {
       throw new Error("Invalid email format.");
     }
