@@ -109,26 +109,48 @@ const EventSchema = new Schema<IEvent>(
   },
 );
 
-// Pre-save hook for slug generation and data normalization
-EventSchema.pre("save", function (next) {
-  const event = this as IEvent;
+EventSchema.pre("save", async function (next) {
+  try {
+    const event = this as IEvent;
 
-  // Generate slug only if title changed or document is new
-  if (event.isModified("title") || event.isNew) {
-    event.slug = generateSlug(event.title);
+    // Normalize date and time into stable storage formats.
+    if (event.isModified("date")) {
+      event.date = normalizeDate(event.date);
+    }
+
+    if (event.isModified("time")) {
+      event.time = normalizeTime(event.time);
+    }
+
+    // Generate a stable base slug, then resolve collisions before save.
+    if (event.isModified("title") || event.isNew) {
+      const baseSlug = generateSlug(event.title);
+      if (!baseSlug) {
+        throw new Error("Unable to generate slug from title");
+      }
+
+      let candidate = baseSlug;
+      let exists = await Event.exists({
+        slug: candidate,
+        _id: { $ne: event._id },
+      });
+
+      while (exists) {
+        const uniqueSuffix = Math.random().toString(36).slice(2, 8);
+        candidate = `${baseSlug}-${uniqueSuffix}`;
+        exists = await Event.exists({
+          slug: candidate,
+          _id: { $ne: event._id },
+        });
+      }
+
+      event.slug = candidate;
+    }
+
+    next();
+  } catch (error) {
+    next(error as Error);
   }
-
-  // Normalize date to ISO format if it's not already
-  if (event.isModified("date")) {
-    event.date = normalizeDate(event.date);
-  }
-
-  // Normalize time format (HH:MM)
-  if (event.isModified("time")) {
-    event.time = normalizeTime(event.time);
-  }
-
-  next();
 });
 
 // Helper function to generate URL-friendly slug
@@ -144,10 +166,37 @@ function generateSlug(title: string): string {
 
 // Helper function to normalize date to ISO format
 function normalizeDate(dateString: string): string {
-  const date = new Date(dateString);
+  const trimmed = dateString.trim();
+
+  // Parse plain YYYY-MM-DD deterministically in UTC to avoid timezone day shifts.
+  const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1]);
+    const month = Number(dateOnlyMatch[2]);
+    const day = Number(dateOnlyMatch[3]);
+
+    const utcDate = new Date(Date.UTC(year, month - 1, day));
+    if (
+      utcDate.getUTCFullYear() !== year ||
+      utcDate.getUTCMonth() + 1 !== month ||
+      utcDate.getUTCDate() !== day
+    ) {
+      throw new Error("Invalid date format");
+    }
+
+    return `${dateOnlyMatch[1]}-${dateOnlyMatch[2]}-${dateOnlyMatch[3]}`;
+  }
+
+  // If datetime has no zone, treat it as UTC for stable normalization.
+  const hasTime = /^\d{4}-\d{2}-\d{2}T/.test(trimmed);
+  const hasTimezone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(trimmed);
+  const normalizedInput = hasTime && !hasTimezone ? `${trimmed}Z` : trimmed;
+
+  const date = new Date(normalizedInput);
   if (isNaN(date.getTime())) {
     throw new Error("Invalid date format");
   }
+
   return date.toISOString().split("T")[0]; // Return YYYY-MM-DD format
 }
 
@@ -182,9 +231,6 @@ function normalizeTime(timeString: string): string {
 
   return `${hours.toString().padStart(2, "0")}:${minutes}`;
 }
-
-// Create unique index on slug for better performance
-EventSchema.index({ slug: 1 }, { unique: true });
 
 // Create compound index for common queries
 EventSchema.index({ date: 1, mode: 1 });
